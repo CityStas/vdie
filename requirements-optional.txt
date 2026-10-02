@@ -1,0 +1,4 @@
+# Optional Windows / visual-target integrations
+mss>=10,<11
+uiautomation>=2,<3
+pydirectinput>=1,<2

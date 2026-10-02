@@ -1,0 +1,408 @@
+# ===========================================================================
+# Intent-Based Gesture Control Engine — configuration
+#
+# RULE: no threshold lives in code.  Every number below can be overridden from
+# the CLI (`--set cursor.sensitivity=1.4`) and every value is written into the
+# recording header, so a benchmark run is fully reproducible.
+#
+# Camera configuration and algorithm configuration are deliberately separated:
+# `capture` + `calibration` describe the PHYSICAL setup, everything else
+# describes the ALGORITHM.  Never compare two algorithm versions across two
+# different camera setups.
+# ===========================================================================
+
+capture:
+  device: 0            # G85 via capture card (UVC).  Use `--list-cameras` to inspect.
+  width: 1280
+  height: 720
+  fps: 30
+  profile: g85_12_60   # key into `profiles`
+  backend: msmf        # MEASURED: msmf 32.6 fps vs dshow 10.5 fps at 1280x720 on the
+                       # connected UVC camera.  dshow also reports isOpened()==True for
+                       # indices it cannot capture from (probe answers the wrong question).
+                       # Roll back with `--backend dshow` if a capture card needs it.
+  fourcc: MJPG
+  buffer_size: 1       # minimise capture latency
+  flip_horizontal: true
+  max_read_failures: 30
+
+profiles:
+  g85_12_60:
+    lens: "Panasonic 12-60mm"
+    distortion_correction: false
+    notes: "Primary lens. Hand occupies ~35% of frame at 1.2 m."
+  g85_fisheye:
+    lens: "Samyang 3.5 fisheye"
+    distortion_correction: optional
+    fisheye_fov_deg: 180.0
+    notes: "Room-scale mode. Undistortion is optional and must be benchmarked."
+  webcam:
+    lens: "generic UVC"
+    notes: "Fallback and regression baseline."
+
+calibration:
+  enabled: false
+  path: config/calibration/g85_fisheye.npz
+  balance: 0.0
+  fov_scale: 1.0
+
+tracking:
+  backend: mediapipe     # mediapipe | synthetic | replay | null
+  max_hands: 2
+  model_complexity: 1
+  min_detection_confidence: 0.5
+  min_tracking_confidence: 0.5
+  min_hand_confidence: 0.7
+  use_gpu: false         # CPU is enough; the GPU is reserved for the temporal model
+  smooth_landmarks: false
+  loss_grace_frames: 3
+
+features:
+  extension_angle: 1.75          # rad (~100 deg) PIP
+  thumb_extension_angle: 1.40    # rad (~80 deg)
+  dip_extension_angle: 2.36      # rad (~135 deg) DIP — distinct range from the PIP
+  require_both_joints: true
+  rotation_invariant: false      # keep V1 baseline behaviour; enable for experiments
+  reference_palm_scale: 0.22
+  pinch_strength_closed: 0.35
+  pinch_strength_open: 1.20
+
+motion:
+  history_size: 90
+  dt_min: 0.002
+  dt_max: 0.25
+  position_smoothing: 0.0
+  pause_speed: 0.12
+  fast_speed: 1.60
+  stats_window: 0.75
+  velocity_filter: ema
+  velocity_alpha: 0.45
+  acceleration_alpha: 0.30
+  control_point: index_tip
+
+gestures:
+  pinch_down: 0.42
+  pinch_release: 0.62
+  middle_pinch_down: 0.42
+  middle_pinch_release: 0.62
+  vote_window: 10
+  vote_required: 7
+  vote_window_dynamic: 4     # swipe/scroll saturate late; 7-of-10 is unreachable
+  vote_required_dynamic: 3
+  min_gesture_duration: 0.10
+  gesture_cooldown: 0.18
+  double_click_window: 0.35
+  swipe_min_distance: 0.22
+  swipe_max_duration: 0.60
+  swipe_min_speed: 0.55
+  swipe_axis_ratio: 1.6
+  # Scroll has no natural end, so it is bounded by a speed ceiling rather than a
+  # duration (see dynamic.py).  Cursor travel is the fast vertical movement that
+  # must not be read as scrolling.
+  scroll_min_distance: 0.10
+  scroll_max_speed: 1.10
+  stability_window: 0.30
+  min_confidence: 0.55
+
+state:
+  activation_stable_ms: 250
+  activation_velocity: 0.60
+  activation_max_tilt_deg: 35
+  activation_confidence: 0.75
+  cursor_idle_timeout_ms: 8000
+  pause_release_ms: 350
+  cooldown_ms: 250
+  drag_max_hold_ms: 15000
+  fast_pinch_click: true
+
+events:
+  accel_threshold: 1.2
+  decel_threshold: -1.2
+  direction_change_deg: 35
+  pause_speed: 0.12
+  pause_min_duration: 0.12
+  thrust_speed: 1.1
+  thrust_max_duration: 0.30
+  target_approach_radius: 0.10
+  min_event_interval: 0.08
+
+intent:
+  temperature: 1.0
+  decay_per_second: 2.0
+  evidence_gain: 3.5
+  weights:
+    gesture: 1.0
+    motion: 0.85
+    temporal: 0.7
+    target: 0.9
+    context: 0.5
+    # Commit is an impulse (see intent_field): it must be able to dominate the
+    # field at the instant it fires.  The field holds 12 intents sitting on their
+    # priors, so a *threshold-level* commit (score 0.55) needs ~1.9 logits of
+    # floor to clear SELECT's 0.72 enter / 0.62 policy gate.  At 0.6 the commit
+    # was visible but never decisive, and clicks were blocked as "below commit
+    # threshold" on every attempt.
+    commit: 1.2
+    future: 0.5
+    user: 0.3
+  hysteresis:
+    MOVE_CURSOR:    {enter: 0.45, stay: 0.30, exit: 0.20}
+    SELECT:         {enter: 0.72, stay: 0.50, exit: 0.32}
+    DOUBLE_CLICK:   {enter: 0.78, stay: 0.55, exit: 0.35}
+    RIGHT_CLICK:    {enter: 0.78, stay: 0.55, exit: 0.35}
+    DRAG:           {enter: 0.70, stay: 0.48, exit: 0.30}
+    SCROLL:         {enter: 0.60, stay: 0.40, exit: 0.25}
+    WINDOW_SWITCH:  {enter: 0.72, stay: 0.50, exit: 0.32}
+    WINDOW_CONTROL: {enter: 0.72, stay: 0.50, exit: 0.32}
+    PAUSE:          {enter: 0.60, stay: 0.40, exit: 0.25}
+    CANCEL:         {enter: 0.65, stay: 0.45, exit: 0.28}
+    CUSTOM:         {enter: 0.75, stay: 0.52, exit: 0.34}
+    UNKNOWN:        {enter: 0.0,  stay: 0.0,  exit: 0.0}
+  futures_enabled: true
+  futures_horizons: [0.12, 0.24, 0.40]
+  futures_samples: 5
+  # Base rates: the logit each intent decays towards when no evidence arrives.
+  # MOVE_CURSOR is positive on purpose (once active, steering is the default
+  # hypothesis).  Without base rates a continuously-present INDEX_UP gesture
+  # saturates the field at p(MOVE_CURSOR)=1 and nothing can out-vote it.
+  priors:
+    MOVE_CURSOR: 0.50
+    SELECT: -0.20
+    DRAG: -0.40
+    SCROLL: -0.90
+    PAUSE: -0.80
+    CANCEL: -1.00
+    DOUBLE_CLICK: -1.60
+    RIGHT_CLICK: -1.60
+    WINDOW_SWITCH: -1.60
+    WINDOW_CONTROL: -1.60
+    CUSTOM: -1.60
+    UNKNOWN: -2.00
+
+targets:
+  provider: uia         # semantic Windows targets for live desktop control
+  refresh_interval_ms: 350
+  min_quality: 0.25
+  gravity_k: 0.22
+  gravity_radius: 0.045
+  gravity_max_force: 0.22
+  gravity_suppress_speed: 1.20
+  approach_min_closing_speed: 0.10
+  avoid_decay: 0.85
+  avoid_penalty: 0.55
+  max_pull_fraction: 0.25
+
+commit:
+  enabled: true
+  decel_ratio: 0.55
+  micro_pause_speed: 0.22
+  micro_pause_min: 0.045
+  micro_pause_max: 0.45
+  reversal_angle_deg: 120
+  reversal_min_speed: 0.35
+  thrust_min_speed: 1.05
+  thrust_max_duration: 0.28
+  # A flick moves the hand; closing a pinch only moves the fingertip.  Speed and
+  # duration alone cannot tell them apart (see policy/commit.py).
+  thrust_min_travel: 0.10
+  threshold: 0.55
+  cooldown: 0.35
+
+policy:
+  default_commit_threshold: 0.62
+  default_stability: 0.55
+  default_cooldown: 0.20
+  per_intent:
+    MOVE_CURSOR:    {risk: 0.00, commit: 0.00, stability: 0.00, cooldown: 0.00}
+    SELECT:         {risk: 0.35, commit: 0.62, stability: 0.55, cooldown: 0.20}
+    DOUBLE_CLICK:   {risk: 0.45, commit: 0.68, stability: 0.60, cooldown: 0.30}
+    RIGHT_CLICK:    {risk: 0.55, commit: 0.72, stability: 0.62, cooldown: 0.35}
+    DRAG:           {risk: 0.50, commit: 0.60, stability: 0.50, cooldown: 0.25}
+    SCROLL:         {risk: 0.10, commit: 0.45, stability: 0.35, cooldown: 0.05}
+    WINDOW_SWITCH:  {risk: 0.40, commit: 0.66, stability: 0.58, cooldown: 0.40}
+    WINDOW_CONTROL: {risk: 0.45, commit: 0.66, stability: 0.58, cooldown: 0.40}
+    PAUSE:          {risk: 0.05, commit: 0.50, stability: 0.40, cooldown: 0.30}
+    CANCEL:         {risk: 0.00, commit: 0.35, stability: 0.25, cooldown: 0.50}
+    CUSTOM:         {risk: 0.60, commit: 0.75, stability: 0.65, cooldown: 0.50}
+
+cursor:
+  controller: touch_surface  # touch_surface | cooperative | gain | velocity_curve | spring
+  sensitivity: 1.0
+  gamma: 1.35
+  alpha_slow: 0.12
+  alpha_medium: 0.30
+  alpha_fast: 0.65
+  # One-Euro pre-filter. `beta` opens the cutoff with speed; the speed is in
+  # normalized units/s (a fast hand move is ~2-3), so beta must be ~1 for the
+  # cutoff to move at all. At the old beta=0.05 / fc=1.1 a 2 Hz movement came
+  # out at a third of its amplitude.
+  euro_min_cutoff: 3.0
+  euro_beta: 1.2
+  euro_d_cutoff: 1.0
+  # Positional lead. Off: as a setpoint offset it makes the cursor overshoot
+  # every fast movement by `v * horizon` px. Superseded by feedforward.
+  prediction_horizon: 0.0
+  prediction_accel_weight: 0.35
+  # Velocity feed-forward: the spring tracks a moving setpoint instead of
+  # chasing it. This is where the latency is actually hidden.
+  feedforward: true
+  feedforward_gain: 0.8
+  feedforward_max_px_s: 6000
+  spring_omega_slow: 9.0
+  spring_omega_fast: 60.0
+  spring_damping_slow: 1.35
+  spring_damping_fast: 0.95
+  # Sub-step bound for the explicit spring integration; limits zeta*omega*h.
+  spring_max_omega_dt: 0.5
+  max_step_px: 900
+  dead_zone: 0.0015
+  relative_mode: false
+  anchor_recenter_ms: 600
+  # Intent-adaptive cursor gain. Measured cost: 30 ms of lag (84.4 -> 54.4 ms)
+  # with zero change in intent recall, commit precision or corrective
+  # movements. The hesitation that pays for itself lives in the commit
+  # threshold, not in the cursor. Kept switchable so the cost stays visible.
+  intent_adaptive: false
+  intent_entropy_gain: 0.55
+  precision_near_target: false
+  precision_gain: 0.55
+  uncertainty_gain_floor: 0.15
+  uncertainty_freeze_below: 0.35
+  recovery_enabled: false
+  recovery_prediction_horizon: 0.35
+  recovery_max_jump: 0.12
+  cooperative_velocity_alpha: 0.32
+  cooperative_deadband: 0.022
+  cooperative_slow_speed: 0.055
+  cooperative_fast_speed: 0.80
+  cooperative_gain_slow: 1.15
+  cooperative_gain_fast: 2.10
+  cooperative_max_speed_px_s: 2200
+  cooperative_accel_px_s2: 10000
+  cooperative_brake_px_s2: 14000
+  cooperative_idle_damping: 11.0
+  cooperative_predict_alpha_slow: 0.62
+  cooperative_predict_alpha_fast: 0.84
+  cooperative_predict_beta: 0.085
+  cooperative_predict_horizon: 0.10
+  cooperative_predict_blend: 0.26
+  cooperative_max_innovation: 0.14
+  cooperative_stationary_speed: 0.020
+  cooperative_motion_deadband: 0.00025
+  cooperative_noise_sample_speed: 0.008
+  cooperative_noise_ema: 0.94
+  cooperative_noise_multiplier: 2.2
+  cooperative_delta_alpha_slow: 0.72
+  cooperative_delta_alpha_fast: 0.90
+  cooperative_max_delta_px_per_frame: 64
+  cooperative_actuator_alpha_slow: 0.92
+  cooperative_actuator_alpha_fast: 0.98
+  cooperative_precision_gain: 0.58
+  cooperative_max_target_pull: 0.35
+  cooperative_target_pull_max_px_per_frame: 7
+  cooperative_target_pull_fraction: 0.10
+  touch_surface_use_calibration: false
+  touch_surface_calibration_path: config/calibration/touch_surface.json
+  touch_surface_hysteresis_px: 1.0
+  touch_surface_alpha_slow: 0.94
+  touch_surface_alpha_fast: 0.995
+  touch_surface_beta: 0.060
+  touch_surface_max_innovation: 0.30
+  touch_surface_stationary_speed: 0.018
+  touch_surface_prediction_horizon: 0.0
+  touch_surface_recovery_reanchor: false
+  target_prediction_horizon: 0.14
+  target_min_motion_px_s: 32
+  target_lock_radius_px: 170
+  target_lock_exit_px: 270
+  target_lock_speed_px_s: 820
+  target_lock_enter_score: 0.60
+  target_lock_exit_score: 0.18
+  target_attraction_strength: 0.24
+  target_arrival_speed_px_s: 260
+  target_arrival_gain: 3.2
+  target_precision_radius_px: 64
+  target_precision_speed_px_s: 180
+  target_gravity_accel_scale: 0.35
+
+bimanual:
+  enabled: true
+  left_click_max_ms: 260
+  right_click_hold_ms: 380
+  one_hand_drag_enabled: false
+  drag_start_ms: 280
+  drag_start_px: 26
+  double_click_window: 0.38
+  zoom_enabled: true
+  zoom_start_ms: 180
+  zoom_deadband_ratio: 0.08
+  zoom_emit_interval: 0.12
+  zoom_baseline_alpha: 0.04
+  zoom_steps_gain: 2.0
+  zoom_max_steps: 1.0
+  selection_enabled: false
+  selection_arm_ms: 450
+  selection_min_separation_px: 120
+  pan_enabled: false
+  pan_start_px: 24
+  action_cooldown: 0.18
+  action_min_confidence: 0.70
+
+user_model:
+  enabled: true
+  half_life: 45.0
+  warmup_samples: 120
+  sensitivity_range: [0.6, 1.8]
+  adaptation_rate: 0.05
+
+grammar:
+  enabled: true
+  separator_ms: 320
+  sequence_timeout_ms: 1600
+  rules:
+    CLOSE_TAB:       ["INDEX_UP", "pause", "SWIPE_LEFT"]
+    REOPEN_TAB:      ["INDEX_UP", "pause", "SWIPE_RIGHT"]
+    NEW_WINDOW:      ["INDEX_UP", "pause", "V_SIGN"]
+    MISSION_CONTROL: ["OPEN_PALM", "pause", "V_SIGN"]
+    SCREENSHOT:      ["V_SIGN", "pause", "PINCH"]
+    LOCK:            ["FIST", "pause", "FIST"]
+
+record:
+  directory: recordings
+  format: jsonl
+  include_frames: true
+  include_landmarks: true
+
+debug:
+  overlay: true
+  telemetry: true
+  show_landmarks: true
+  show_trajectory: true
+  show_prediction: true
+  show_targets: true
+  show_activation_zone: true
+  print_every_ms: 1000
+  window_name: intent-gesture-engine
+  scale: 1.0
+  window_width: 960
+  window_height: 540
+
+control:
+  enabled: true
+  move_mouse: true
+  clicks: true
+  keyboard: true
+  windows: true
+  scroll_multiplier: 1.0
+  mapping: absolute
+  active_region: [0.0, 0.0, 1.0, 1.0]
+  mouse_interval_ms: 0.0
+
+safety:
+  emergency_gesture: FIST
+  require_activation: true
+  release_buttons_on_exit: true
+  max_click_rate_hz: 8.0
+  max_scroll_rate_hz: 30.0
+  freeze_below_confidence: 0.35
+  stop_below_confidence: 0.20

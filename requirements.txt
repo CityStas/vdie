@@ -1,0 +1,8 @@
+# Windows runtime dependencies for the camera build.
+# MediaPipe 1.0.1 publishes a Windows x86-64 wheel and uses the Tasks API.
+mediapipe==1.0.1
+numpy>=1.26,<3
+opencv-python==4.14.0.94
+PyYAML>=6,<7
+pyautogui>=0.9.54,<1
+uiautomation>=2,<3
